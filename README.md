@@ -238,13 +238,14 @@ When a High confidence opportunity is detected:
 ```
 solarb-agent/
 ├── .gitignore
+├── CLAUDE.md                   # Project guidelines
 ├── README.md
-├── backend/                    # Rust agent
+├── backend/                    # Rust agent (cargo)
 │   ├── Cargo.toml
 │   ├── Cargo.lock
 │   ├── .env.example
 │   └── src/
-│       ├── main.rs             # Entry point + scan loop
+│       ├── main.rs             # Entry point + scan loop + execution
 │       ├── types.rs            # Core data structures
 │       ├── scanner/
 │       │   ├── mod.rs
@@ -252,11 +253,41 @@ solarb-agent/
 │       │   └── drift.rs        # Drift Protocol scanner
 │       ├── detector/
 │       │   └── mod.rs          # Arbitrage detection + scoring
-│       ├── executor/           # (planned) On-chain execution
-│       ├── risk/               # (planned) Risk management
-│       ├── wallet/             # (planned) Wallet integration
-│       └── ws/                 # (planned) WebSocket server
-├── frontend/                   # (planned) Next.js dashboard
+│       ├── executor/
+│       │   ├── mod.rs          # Trade orchestrator + exit logic
+│       │   ├── drift_executor.rs # Drift perp order placement
+│       │   └── jupiter.rs      # Jupiter swap quotes + execution
+│       ├── risk/
+│       │   └── mod.rs          # Position tracking + risk gates
+│       ├── wallet/
+│       │   └── mod.rs          # Solana keypair + balance queries
+│       └── ws/                 # (planned) WebSocket server for frontend
+├── frontend/                   # Next.js 15 dashboard (pnpm)
+│   ├── package.json
+│   ├── next.config.ts
+│   ├── tailwind.config.ts
+│   ├── tsconfig.json
+│   ├── public/
+│   │   └── bg/                 # Anime-style background assets
+│   └── src/
+│       ├── app/
+│       │   ├── layout.tsx      # Root layout + fonts
+│       │   ├── page.tsx        # Landing page (hero + agent info)
+│       │   ├── dashboard/
+│       │   │   └── page.tsx    # Live dashboard (positions, P&L, feed)
+│       │   └── globals.css     # Tailwind + custom animations
+│       ├── components/
+│       │   ├── AnimatedBg.tsx      # CSS animated anime landscape
+│       │   ├── Hero.tsx            # Landing hero section
+│       │   ├── AgentStats.tsx      # Agent status cards
+│       │   ├── LiveFeed.tsx        # Real-time opportunity feed
+│       │   ├── PositionCard.tsx    # Open position display
+│       │   ├── PnlChart.tsx        # P&L visualization
+│       │   └── WalletConnect.tsx   # Bitget Wallet connect button
+│       ├── hooks/
+│       │   └── useWebSocket.ts     # WebSocket hook for agent data
+│       └── lib/
+│           └── types.ts            # Shared TypeScript types
 └── sc/                         # (planned) Smart contracts, if needed
 ```
 
@@ -267,9 +298,9 @@ solarb-agent/
 ### Prerequisites
 
 - Rust 1.75+ (install via https://rustup.rs)
-- Node.js 18+ (for frontend, later)
+- Node.js 18+ and pnpm (install via `npm i -g pnpm`)
 
-### Run the Agent
+### Run the Agent (Backend)
 
 ```bash
 cd backend
@@ -278,31 +309,56 @@ cp .env.example .env
 cargo run
 ```
 
+### Run the Dashboard (Frontend)
+
+```bash
+cd frontend
+pnpm install
+pnpm dev
+```
+
 ### Run Tests
 
 ```bash
-cd backend
-cargo test
+cd backend && cargo test
 ```
 
 ### Environment Variables
 
-See `backend/.env.example` for all available configuration options.
+Backend: see `backend/.env.example`
+Frontend: see `frontend/.env.example`
 
 ---
 
 ## Configuration
 
+### Backend (`backend/.env`)
+
 | Variable | Default | Description |
 |---|---|---|
 | `POLYMARKET_API` | `https://clob.polymarket.com` | Polymarket CLOB API endpoint |
 | `DRIFT_API` | `https://mainnet-beta.api.drift.trade` | Drift Protocol REST API endpoint |
-| `SOLANA_RPC` | `https://api.mainnet-beta.solana.com` | Solana RPC endpoint (use paid RPC for production) |
-| `MIN_NET_SPREAD` | `0.025` | Minimum net spread to flag opportunity (0.025 = 2.5%) |
-| `MAX_POSITION_USDC` | `500` | Maximum USDC per single trade leg |
-| `MAX_TOTAL_EXPOSURE_USDC` | `2000` | Maximum total USDC exposure across all positions |
-| `SCAN_INTERVAL_SECS` | `3` | Seconds between scan cycles |
+| `SOLANA_RPC` | `https://api.devnet.solana.com` | Solana RPC endpoint |
+| `SOLANA_NETWORK` | `devnet` | Network: `devnet` or `mainnet` |
+| `JUPITER_API` | `https://quote-api.jup.ag/v6` | Jupiter V6 API endpoint |
+| `MIN_NET_SPREAD` | `0.025` | Minimum net spread (0.025 = 2.5%) |
+| `MAX_POSITION_USDC` | `500` | Max USDC per trade |
+| `MAX_TOTAL_EXPOSURE_USDC` | `2000` | Max total exposure |
+| `SCAN_INTERVAL_SECS` | `3` | Seconds between scans |
+| `DRY_RUN` | `true` | Log trades without sending transactions |
+| `TAKE_PROFIT_PCT` | `0.50` | Take profit at 50% of entry spread |
+| `STOP_LOSS_PCT` | `1.00` | Stop loss at 100% of entry spread |
+| `DAILY_LOSS_STOP_USDC` | `200` | Max daily loss before halting |
+| `MAX_OPEN_POSITIONS` | `5` | Max concurrent positions |
+| `AGENT_KEYPAIR_PATH` | _(none)_ | Path to Solana keypair JSON file |
 | `RUST_LOG` | `info` | Log level: info, debug, trace |
+
+### Frontend (`frontend/.env.local`)
+
+| Variable | Default | Description |
+|---|---|---|
+| `NEXT_PUBLIC_WS_URL` | `ws://localhost:9944` | WebSocket URL for agent data |
+| `NEXT_PUBLIC_AGENT_API_URL` | `http://localhost:8080` | Agent REST API URL |
 
 ---
 
@@ -311,28 +367,43 @@ See `backend/.env.example` for all available configuration options.
 | Phase | Target | Deliverables | Status |
 |---|---|---|---|
 | Sprint 1 | Mar 11-15 | Scanner + Detector core logic, 14 unit tests | Done |
-| Sprint 2 | Mar 16-21 | On-chain executor (Jupiter + Drift), risk guards, devnet testing | In Progress |
-| Sprint 3 | Mar 22-24 | Frontend dashboard, Bitget Wallet connect, live P&L display | Planned |
-| Sprint 4 | Mar 25-27 | Demo video, X Article, submission polish | Planned |
+| Sprint 2 | Mar 16 | Executor + Risk + Wallet modules, 24 total tests | Done |
+| Sprint 3 | Mar 16-21 | Frontend dashboard, Bitget Wallet connect, live P&L display | In Progress |
+| Sprint 4 | Mar 22-27 | Demo video, X Article, submission polish | Planned |
 
-### Sprint 2 Breakdown
+### Sprint 2 Summary (Done)
+
+| Module | Tests | Description |
+|---|---|---|
+| Wallet | 1 | Keypair loading, SOL/USDC balance queries, tx signing |
+| Risk Manager | 6 | Position limits, exposure tracking, daily loss stop |
+| Trade Executor | 2 | Drift perp execution, TP/SL exit conditions, dry-run mode |
+| Drift Executor | - | REST API order placement (open/close perp positions) |
+| Jupiter Client | - | V6 quote + swap execution |
+
+### Sprint 3 Breakdown (Frontend)
 
 | Task | Description |
 |---|---|
-| Jupiter integration | Swap routing for optimal Solana token trades |
-| Drift SDK integration | Open/close perpetual positions programmatically |
-| Risk manager | Enforce position limits, daily loss stops, max exposure |
-| Wallet module | Solana keypair management + transaction signing |
-| Devnet testing | End-to-end test on Solana devnet before mainnet |
-
-### Sprint 3 Breakdown
-
-| Task | Description |
-|---|---|
-| Dashboard UI | Deploy agent, set budget, view live opportunities |
-| Bitget Wallet connect | Wallet connection for fund management (required for Bitget prize) |
-| P&L monitor | Real-time profit/loss tracking per position |
+| Next.js 15 setup | App Router + TypeScript + Tailwind, using pnpm |
+| Animated background | CSS-animated anime-style landscape, calming aesthetic |
+| Landing page | Hero with agent intro, clean rounded cards, minimal text |
+| Dashboard | Live opportunities feed, open positions, P&L chart |
+| WebSocket hook | Real-time data from backend agent via WebSocket |
+| Bitget Wallet | Wallet connect button (required for Bitget prize pool) |
 | Deploy | Host on Vercel for public demo |
+
+### Frontend Design Principles
+
+| Principle | Detail |
+|---|---|
+| Layout | Modern rounded cards (glassmorphism), clean whitespace |
+| Background | Animated anime-style landscape (calming, scenic) |
+| Typography | Minimal text, large headings, small supporting copy |
+| Colors | Soft gradients, muted palette with accent highlights |
+| Icons/Emoji | None -- clean shapes and typography only |
+| Motion | Subtle CSS animations, smooth transitions |
+| Package manager | pnpm (not npm or yarn) |
 
 ---
 

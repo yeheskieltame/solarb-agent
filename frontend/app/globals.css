@@ -1,0 +1,232 @@
+@import "tailwindcss";
+
+/* ── Design Tokens ── */
+:root {
+  --bg-deep: #060b18;
+  --bg-surface: rgba(12, 20, 40, 0.65);
+  --bg-card: rgba(15, 25, 50, 0.55);
+  --bg-card-hover: rgba(20, 35, 65, 0.65);
+  --border-glass: rgba(100, 160, 255, 0.12);
+  --border-glow: rgba(80, 180, 255, 0.25);
+  --text-primary: #e8edf5;
+  --text-secondary: #8a9cc0;
+  --text-muted: #4d6080;
+  --accent-cyan: #38bdf8;
+  --accent-teal: #2dd4bf;
+  --accent-violet: #a78bfa;
+  --profit: #34d399;
+  --loss: #f87171;
+  --warning: #fbbf24;
+  --glass-blur: 16px;
+  --radius-card: 20px;
+  --radius-button: 12px;
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+@theme inline {
+  --color-bg-deep: var(--bg-deep);
+  --color-bg-surface: var(--bg-surface);
+  --color-bg-card: var(--bg-card);
+  --color-bg-card-hover: var(--bg-card-hover);
+  --color-border-glass: var(--border-glass);
+  --color-border-glow: var(--border-glow);
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-muted: var(--text-muted);
+  --color-accent-cyan: var(--accent-cyan);
+  --color-accent-teal: var(--accent-teal);
+  --color-accent-violet: var(--accent-violet);
+  --color-profit: var(--profit);
+  --color-loss: var(--loss);
+  --color-warning: var(--warning);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+}
+
+/* ── Base ── */
+html {
+  scroll-behavior: smooth;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  margin: 0;
+  background: var(--bg-deep);
+  color: var(--text-primary);
+  font-family: var(--font-sans), system-ui, -apple-system, sans-serif;
+  min-height: 100dvh;
+  overflow-x: hidden;
+}
+
+/* ── Glassmorphism Card ── */
+.glass-card {
+  background: var(--bg-card);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--border-glass);
+  border-radius: var(--radius-card);
+  transition: background 0.2s ease, border-color 0.2s ease;
+}
+
+.glass-card:hover {
+  background: var(--bg-card-hover);
+  border-color: var(--border-glow);
+}
+
+.glass-card-static {
+  background: var(--bg-card);
+  backdrop-filter: blur(var(--glass-blur));
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  border: 1px solid var(--border-glass);
+  border-radius: var(--radius-card);
+}
+
+/* ── Animated Background Scene ── */
+.anime-bg {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* Image-based bg replaces the old CSS gradient via AnimatedBg component */
+
+.anime-bg-stars {
+  position: absolute;
+  inset: 0;
+  background-image:
+    radial-gradient(1.5px 1.5px at 10% 15%, rgba(255, 255, 255, 0.7) 50%, transparent 50%),
+    radial-gradient(1px 1px at 25% 8%, rgba(200, 220, 255, 0.5) 50%, transparent 50%),
+    radial-gradient(2px 2px at 45% 22%, rgba(180, 210, 255, 0.6) 50%, transparent 50%),
+    radial-gradient(1px 1px at 60% 5%, rgba(255, 255, 255, 0.5) 50%, transparent 50%),
+    radial-gradient(1.5px 1.5px at 75% 18%, rgba(200, 230, 255, 0.6) 50%, transparent 50%),
+    radial-gradient(1px 1px at 88% 12%, rgba(255, 255, 255, 0.4) 50%, transparent 50%),
+    radial-gradient(1px 1px at 33% 28%, rgba(200, 220, 255, 0.3) 50%, transparent 50%),
+    radial-gradient(2px 2px at 55% 10%, rgba(180, 200, 255, 0.5) 50%, transparent 50%),
+    radial-gradient(1px 1px at 92% 25%, rgba(255, 255, 255, 0.4) 50%, transparent 50%),
+    radial-gradient(1.5px 1.5px at 5% 30%, rgba(200, 220, 255, 0.3) 50%, transparent 50%);
+  animation: twinkle 6s ease-in-out infinite alternate;
+}
+
+/* Moon, mountains, water removed — replaced by anime artwork images */
+
+.anime-bg-cloud {
+  position: absolute;
+  border-radius: 50%;
+  background: rgba(100, 140, 200, 0.06);
+  filter: blur(20px);
+}
+
+.anime-bg-cloud-1 {
+  top: 12%;
+  left: -10%;
+  width: 300px;
+  height: 60px;
+  animation: cloudDrift 45s linear infinite;
+}
+
+.anime-bg-cloud-2 {
+  top: 25%;
+  left: -15%;
+  width: 400px;
+  height: 50px;
+  animation: cloudDrift 60s linear infinite;
+  animation-delay: -20s;
+  opacity: 0.6;
+}
+
+.anime-bg-cloud-3 {
+  top: 8%;
+  left: -8%;
+  width: 250px;
+  height: 40px;
+  animation: cloudDrift 55s linear infinite;
+  animation-delay: -35s;
+  opacity: 0.4;
+}
+
+/* ── Keyframes ── */
+@keyframes twinkle {
+  0% { opacity: 0.6; }
+  100% { opacity: 1; }
+}
+
+@keyframes cloudDrift {
+  from { transform: translateX(0); }
+  to { transform: translateX(calc(100vw + 400px)); }
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-12px); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 20px rgba(56, 189, 248, 0.15); }
+  50% { box-shadow: 0 0 30px rgba(56, 189, 248, 0.3); }
+}
+
+/* ── Utility Classes ── */
+.animate-fade-in {
+  animation: fadeIn 0.5s ease-out forwards;
+}
+
+.animate-slide-up {
+  animation: slideUp 0.6s ease-out forwards;
+}
+
+.animate-pulse-glow {
+  animation: pulse-glow 3s ease-in-out infinite;
+}
+
+.animate-float {
+  animation: float 5s ease-in-out infinite;
+}
+
+.text-gradient {
+  background: linear-gradient(135deg, var(--accent-cyan), var(--accent-teal));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.text-gradient-violet {
+  background: linear-gradient(135deg, var(--accent-violet), var(--accent-cyan));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(100, 160, 255, 0.15);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 160, 255, 0.3);
+}
+
+.font-tabular {
+  font-variant-numeric: tabular-nums;
+}
