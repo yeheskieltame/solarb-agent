@@ -1,0 +1,17 @@
+# Rust
+**/target/
+**/*.rs.bk
+
+# Node (frontend)
+**/node_modules/
+**/.next/
+**/dist/
+
+# Environment
+.env
+**/.env
+
+# OS
+.DS_Store
+*.swp
+*.swo
