@@ -42,6 +42,27 @@ impl TradeExecutor {
         }
     }
 
+    /// Check if the Drift Gateway is reachable (for live mode)
+    pub async fn check_gateway(&self) -> bool {
+        if self.dry_run {
+            return true;
+        }
+        match self.drift.health_check().await {
+            Ok(healthy) => {
+                if healthy {
+                    info!("Drift Gateway: connected");
+                } else {
+                    warn!("Drift Gateway: returned unhealthy status");
+                }
+                healthy
+            }
+            Err(e) => {
+                warn!("Drift Gateway: unreachable ({})", e);
+                false
+            }
+        }
+    }
+
     pub async fn execute_opportunity(
         &self,
         opp: &ArbOpportunity,

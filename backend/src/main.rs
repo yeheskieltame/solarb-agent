@@ -4,14 +4,17 @@ mod risk;
 mod scanner;
 mod types;
 mod wallet;
+mod ws;
 
 use anyhow::Result;
+use chrono::Utc;
 use dotenvy::dotenv;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use std::env;
 use std::sync::Arc;
-use tokio::time::{sleep, Duration};
+use tokio::sync::broadcast;
+use tokio::time::{sleep, Duration, Instant};
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
@@ -21,6 +24,7 @@ use crate::risk::RiskManager;
 use crate::scanner::{DriftScanner, PolymarketScanner};
 use crate::types::*;
 use crate::wallet::SolWallet;
+use crate::ws::{AgentStatusDto, OpportunityDto, PnlPointDto, PositionDto, WsEvent, WsServer};
 
 // ── Agent state ───────────────────────────────────────────────────────────────
 
@@ -30,6 +34,8 @@ struct AgentState {
     high_confidence_found: u64,
     trades_executed: u64,
     scan_errors: u64,
+    started_at: Instant,
+    cumulative_pnl: f64,
 }
 
 impl AgentState {
@@ -40,6 +46,8 @@ impl AgentState {
             high_confidence_found: 0,
             trades_executed: 0,
             scan_errors: 0,
+            started_at: Instant::now(),
+            cumulative_pnl: 0.0,
         }
     }
 
@@ -56,6 +64,22 @@ impl AgentState {
 
     fn record_error(&mut self) {
         self.scan_errors += 1;
+    }
+
+    fn uptime_secs(&self) -> u64 {
+        self.started_at.elapsed().as_secs()
+    }
+
+    fn to_status_dto(&self, daily_pnl: Decimal) -> AgentStatusDto {
+        AgentStatusDto {
+            is_running: true,
+            scan_count: self.total_scans,
+            opportunities_found: self.opportunities_found,
+            trades_executed: self.trades_executed,
+            total_pnl: dec_to_f64(daily_pnl),
+            uptime: self.uptime_secs(),
+            last_scan: Utc::now().timestamp_millis(),
+        }
     }
 
     fn log_summary(&self) {
@@ -115,6 +139,11 @@ fn env_decimal(key: &str, default: Decimal) -> Decimal {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(default)
+}
+
+fn dec_to_f64(d: Decimal) -> f64 {
+    use std::str::FromStr;
+    f64::from_str(&d.to_string()).unwrap_or(0.0)
 }
 
 // ── Main scan loop ────────────────────────────────────────────────────────────
@@ -177,6 +206,7 @@ async fn monitor_positions(
     executor: &TradeExecutor,
     risk_manager: &mut RiskManager,
     drift_scanner: &DriftScanner,
+    ws_tx: &broadcast::Sender<WsEvent>,
 ) {
     let open_positions: Vec<Position> = risk_manager.open_positions()
         .into_iter().cloned().collect();
@@ -203,12 +233,24 @@ async fn monitor_positions(
             None => continue,
         };
 
+        // Broadcast position update to frontend
+        let _ = ws_tx.send(WsEvent::PositionUpdate(
+            PositionDto::from_position(pos, current_price),
+        ));
+
         if let Some(reason) = executor.check_exit_conditions(pos, current_price) {
             info!("Exit triggered for {}: {} (price={:.2})", pos.id, reason, current_price);
 
             match executor.close_position(pos).await {
                 Ok(pnl) => {
                     risk_manager.close_position(&pos.id, pnl);
+
+                    // Broadcast PnL update
+                    let _ = ws_tx.send(WsEvent::PnlUpdate(PnlPointDto {
+                        timestamp: Utc::now().timestamp_millis(),
+                        value: dec_to_f64(pnl),
+                        cumulative: dec_to_f64(risk_manager.daily_pnl()),
+                    }));
                 }
                 Err(e) => {
                     warn!("Failed to close position {}: {}", pos.id, e);
@@ -235,7 +277,7 @@ async fn main() -> Result<()> {
 
     let config = load_config();
 
-    info!("SolArb Agent v0.2 starting up");
+    info!("SolArb Agent v0.3 starting up");
     info!("Network    : {:?}", config.network);
     info!("Dry run    : {}", config.dry_run);
     info!("Min spread : {}%", config.min_net_spread * dec!(100));
@@ -291,7 +333,29 @@ async fn main() -> Result<()> {
     };
 
     let executor = TradeExecutor::new(Arc::clone(&executor_wallet), &config);
+
+    // Check gateway connectivity for live mode
+    if !config.dry_run {
+        if !executor.check_gateway().await {
+            warn!("Drift Gateway not reachable — falling back to dry-run mode");
+            warn!("To enable live trading, run the Drift Gateway: https://github.com/drift-labs/gateway");
+        }
+    }
+
     let mut state = AgentState::new();
+
+    // Start WebSocket server
+    let ws_port: u16 = env::var("WS_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(9944);
+
+    let ws_server = WsServer::new(256);
+    let ws_tx = ws_server.sender();
+
+    tokio::spawn(async move {
+        ws_server.run(ws_port).await;
+    });
 
     info!("Agent ready — scanning every {}s", config.scan_interval_secs);
     info!("Press Ctrl+C to stop\n");
@@ -301,6 +365,13 @@ async fn main() -> Result<()> {
         match run_scan_cycle(&poly_scanner, &drift_scanner, &detector, &config).await {
             Ok(opportunities) => {
                 state.record_scan(&opportunities);
+
+                // Broadcast opportunities to frontend
+                for opp in &opportunities {
+                    let _ = ws_tx.send(WsEvent::Opportunity(
+                        OpportunityDto::from_arb(opp),
+                    ));
+                }
 
                 // 2. Execute best high-confidence opportunity
                 if let Some(best) = opportunities.iter().find(|o| o.confidence == Confidence::High) {
@@ -321,6 +392,10 @@ async fn main() -> Result<()> {
                             Ok(()) => {
                                 match executor.execute_opportunity(best, size).await {
                                     Ok(position) => {
+                                        // Broadcast new position
+                                        let _ = ws_tx.send(WsEvent::PositionUpdate(
+                                            PositionDto::from_position(&position, position.entry_price),
+                                        ));
                                         risk_manager.open_position(position);
                                         state.record_trade();
                                     }
@@ -341,9 +416,14 @@ async fn main() -> Result<()> {
         }
 
         // 3. Monitor open positions for exit conditions
-        monitor_positions(&executor, &mut risk_manager, &drift_scanner).await;
+        monitor_positions(&executor, &mut risk_manager, &drift_scanner, &ws_tx).await;
 
-        // 4. Periodic summary
+        // 4. Broadcast agent status every cycle
+        let _ = ws_tx.send(WsEvent::AgentStatus(
+            state.to_status_dto(risk_manager.daily_pnl()),
+        ));
+
+        // 5. Periodic summary
         if state.total_scans % 10 == 0 {
             state.log_summary();
             risk_manager.log_summary();
