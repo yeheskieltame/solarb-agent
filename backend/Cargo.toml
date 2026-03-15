@@ -38,12 +38,12 @@ dotenvy = "0.15"
 chrono = { version = "0.4", features = ["serde"] }
 
 # ── Sprint 2: on-chain execution ──────────────────────────────────────────────
-# Solana SDK v2.x resolves the zeroize conflict in v1.18.
-# Uncomment when adding the executor module.
-#
-# solana-client = "2.1"
-# solana-sdk   = "2.1"
-# anchor-client = "0.30"
+solana-client = "2.1"
+solana-sdk = "2.1"
+bs58 = "0.5"
+uuid = { version = "1", features = ["v4"] }
+base64 = "0.22"
+bincode = "1"
 
 [dev-dependencies]
 tokio-test = "0.4"

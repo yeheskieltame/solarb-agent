@@ -215,36 +215,155 @@ impl fmt::Display for ArbOpportunity {
     }
 }
 
+// ── Position tracking (Sprint 2) ─────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PositionSide {
+    Long,
+    Short,
+}
+
+impl fmt::Display for PositionSide {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PositionSide::Long => write!(f, "LONG"),
+            PositionSide::Short => write!(f, "SHORT"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PositionStatus {
+    Opening,
+    Open,
+    Closing,
+    Closed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Position {
+    pub id: String,
+    pub opportunity_id: String,
+    pub asset: Asset,
+    pub side: PositionSide,
+    pub entry_price: Decimal,
+    pub size_usdc: Decimal,
+    pub drift_market_index: u16,
+    pub take_profit_price: Decimal,
+    pub stop_loss_price: Decimal,
+    pub status: PositionStatus,
+    pub opened_at: DateTime<Utc>,
+    pub closed_at: Option<DateTime<Utc>>,
+    pub pnl: Option<Decimal>,
+    pub tx_open: Option<String>,
+    pub tx_close: Option<String>,
+}
+
+impl fmt::Display for Position {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} {} ${:.0} @ {:.2} | TP={:.2} SL={:.2} | {:?}",
+            self.asset, self.side, self.size_usdc, self.entry_price,
+            self.take_profit_price, self.stop_loss_price, self.status,
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExitReason {
+    TakeProfit,
+    StopLoss,
+    Expired,
+}
+
+impl fmt::Display for ExitReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ExitReason::TakeProfit => write!(f, "TAKE_PROFIT"),
+            ExitReason::StopLoss => write!(f, "STOP_LOSS"),
+            ExitReason::Expired => write!(f, "EXPIRED"),
+        }
+    }
+}
+
+// ── Risk ─────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct RiskLimits {
+    pub max_position_usdc: Decimal,
+    pub max_total_exposure_usdc: Decimal,
+    pub daily_loss_stop_usdc: Decimal,
+    pub max_open_positions: usize,
+}
+
+impl Default for RiskLimits {
+    fn default() -> Self {
+        Self {
+            max_position_usdc: Decimal::new(500, 0),
+            max_total_exposure_usdc: Decimal::new(2000, 0),
+            daily_loss_stop_usdc: Decimal::new(200, 0),
+            max_open_positions: 5,
+        }
+    }
+}
+
+// ── Network ──────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SolanaNetwork {
+    Devnet,
+    Mainnet,
+}
+
+impl SolanaNetwork {
+    pub fn usdc_mint(&self) -> &str {
+        match self {
+            SolanaNetwork::Devnet => "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+            SolanaNetwork::Mainnet => "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        }
+    }
+}
+
 // ── Config ────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 pub struct AgentConfig {
-    /// Minimum net spread required to flag as opportunity
     pub min_net_spread: Decimal,
-    /// Maximum position size per trade in USDC
     pub max_position_usdc: Decimal,
-    /// Maximum total exposure across all open positions
     pub max_total_exposure_usdc: Decimal,
-    /// How often to scan in seconds
     pub scan_interval_secs: u64,
-    /// Polymarket CLOB API base URL
     pub polymarket_api: String,
-    /// Drift Protocol API base URL
     pub drift_api: String,
-    /// Solana RPC endpoint
     pub solana_rpc: String,
+    pub network: SolanaNetwork,
+    pub keypair_path: Option<String>,
+    pub jupiter_api: String,
+    pub dry_run: bool,
+    pub daily_loss_stop_usdc: Decimal,
+    pub take_profit_pct: Decimal,
+    pub stop_loss_pct: Decimal,
+    pub max_open_positions: usize,
 }
 
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
-            min_net_spread: Decimal::new(25, 3),       // 2.5%
-            max_position_usdc: Decimal::new(500, 0),   // $500 per trade
-            max_total_exposure_usdc: Decimal::new(2000, 0), // $2000 total
+            min_net_spread: Decimal::new(25, 3),
+            max_position_usdc: Decimal::new(500, 0),
+            max_total_exposure_usdc: Decimal::new(2000, 0),
             scan_interval_secs: 3,
             polymarket_api: "https://clob.polymarket.com".to_string(),
             drift_api: "https://mainnet-beta.api.drift.trade".to_string(),
             solana_rpc: "https://api.mainnet-beta.solana.com".to_string(),
+            network: SolanaNetwork::Devnet,
+            keypair_path: None,
+            jupiter_api: "https://quote-api.jup.ag/v6".to_string(),
+            dry_run: true,
+            daily_loss_stop_usdc: Decimal::new(200, 0),
+            take_profit_pct: Decimal::new(50, 2),
+            stop_loss_pct: Decimal::new(100, 2),
+            max_open_positions: 5,
         }
     }
 }
