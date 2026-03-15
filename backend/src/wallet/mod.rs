@@ -63,6 +63,11 @@ impl SolWallet {
         &self.keypair
     }
 
+    /// Return the USDC mint address as a string (network-aware)
+    pub fn usdc_mint_str(&self) -> &str {
+        self.network.usdc_mint()
+    }
+
     pub async fn sol_balance(&self) -> Result<Decimal> {
         let lamports = self.rpc
             .get_balance(&self.keypair.pubkey())
