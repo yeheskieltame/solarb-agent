@@ -361,8 +361,8 @@ impl Default for AgentConfig {
             jupiter_api: "https://quote-api.jup.ag/v6".to_string(),
             dry_run: true,
             daily_loss_stop_usdc: Decimal::new(200, 0),
-            take_profit_pct: Decimal::new(50, 2),
-            stop_loss_pct: Decimal::new(100, 2),
+            take_profit_pct: Decimal::new(3, 2),  // 3% of entry price
+            stop_loss_pct: Decimal::new(5, 2),   // 5% of entry price
             max_open_positions: 5,
         }
     }

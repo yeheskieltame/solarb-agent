@@ -27,7 +27,7 @@ impl SolWallet {
             .context("Failed to read keypair file")?;
         let bytes: Vec<u8> = serde_json::from_str(&key_bytes)
             .context("Failed to parse keypair JSON (expected [u8; 64] array)")?;
-        let keypair = Keypair::from_bytes(&bytes)
+        let keypair = Keypair::try_from(bytes.as_slice())
             .context("Invalid keypair bytes")?;
 
         let usdc_mint = Pubkey::from_str(network.usdc_mint())

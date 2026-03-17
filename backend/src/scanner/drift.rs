@@ -4,53 +4,48 @@ use reqwest::Client;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use serde::Deserialize;
-use std::collections::HashMap;
 use std::str::FromStr;
 use tracing::debug;
 
 use crate::types::{Asset, DriftSignal};
 
-// ── Drift API response shapes ─────────────────────────────────────────────────
-// Drift's public REST API: https://mainnet-beta.api.drift.trade/v2/
+// ── Drift DLOB API response shapes ──────────────────────────────────────────
+// DLOB API (dlob.drift.trade) is public and provides real-time market data.
+// Data API (data.api.drift.trade) provides historical funding rates.
 
-/// Drift market info from GET /v2/perpMarkets
+/// DLOB L2 orderbook response (also includes market metadata)
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct RawPerpMarket {
+struct DlobL2Response {
+    market_name: String,
     market_index: u16,
-    symbol: String,           // e.g. "BTC-PERP"
-    mark_price: String,       // scaled by 1e6
-    oracle_price: String,     // scaled by 1e6
-    last_funding_rate: String, // scaled by 1e9, per hour
+    /// Mark price scaled by 1e6
+    mark_price: String,
+    /// Oracle price (raw integer scaled by 1e6)
+    oracle: i64,
 }
 
-/// Drift funding rate from GET /v2/fundingRates/{marketIndex}
+/// Funding rate record from data API
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct RawFundingRate {
-    funding_rate: String, // scaled by 1e9
-    ts: String,
+struct FundingRateRecord {
+    /// Funding rate scaled by 1e9
+    funding_rate: String,
 }
 
-// ── Drift market index map ────────────────────────────────────────────────────
-
-/// Known Drift perpetual market indices (stable, defined in Drift protocol)
-fn drift_market_index(asset: &Asset) -> u16 {
-    match asset {
-        Asset::BTC => 1,
-        Asset::ETH => 2,
-        Asset::SOL => 0, // SOL-PERP is market 0
-    }
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FundingRatesResponse {
+    funding_rates: Vec<FundingRateRecord>,
 }
 
-fn symbol_to_asset(symbol: &str) -> Option<Asset> {
-    match symbol {
-        "BTC-PERP" => Some(Asset::BTC),
-        "ETH-PERP" => Some(Asset::ETH),
-        "SOL-PERP" => Some(Asset::SOL),
-        _ => None,
-    }
-}
+// ── Known markets ───────────────────────────────────────────────────────────
+
+const MARKETS: &[(&str, Asset)] = &[
+    ("SOL-PERP", Asset::SOL),
+    ("BTC-PERP", Asset::BTC),
+    ("ETH-PERP", Asset::ETH),
+];
 
 // ── Drift price scaling ───────────────────────────────────────────────────────
 
@@ -67,16 +62,18 @@ fn parse_drift_price(raw: &str) -> Result<Decimal> {
 
 fn parse_drift_funding(raw: &str) -> Result<Decimal> {
     let raw_int = Decimal::from_str(raw).context("bad funding string")?;
-    // Result is in units of "per oracle price", divide by PRECISION to get a ratio
-    // Then that ratio applied every hour → this is the hourly funding rate
     Ok(raw_int / DRIFT_FUNDING_PRECISION)
 }
 
 // ── Scanner ───────────────────────────────────────────────────────────────────
 
+const DLOB_API: &str = "https://dlob.drift.trade";
+const DATA_API: &str = "https://data.api.drift.trade";
+
 pub struct DriftScanner {
     client: Client,
-    base_url: String,
+    /// Kept for potential gateway use, but scanning uses public APIs
+    _base_url: String,
 }
 
 impl DriftScanner {
@@ -89,24 +86,42 @@ impl DriftScanner {
 
         Self {
             client,
-            base_url: base_url.to_string(),
+            _base_url: base_url.to_string(),
         }
     }
 
-    /// Fetch DriftSignal for a specific asset
-    pub async fn fetch_signal(&self, asset: &Asset) -> Result<DriftSignal> {
-        let market_index = drift_market_index(asset);
+    /// Fetch all supported assets at once via DLOB public API
+    pub async fn fetch_all_signals(&self) -> Result<Vec<DriftSignal>> {
+        let mut signals = Vec::new();
 
-        // Fetch all perp markets in one call (more efficient than one per asset)
-        let markets = self.fetch_perp_markets().await?;
+        for (market_name, asset) in MARKETS {
+            match self.fetch_market_signal(market_name, asset).await {
+                Ok(signal) => signals.push(signal),
+                Err(e) => {
+                    debug!("Failed to fetch {}: {}", market_name, e);
+                }
+            }
+        }
 
-        let market = markets
-            .get(&market_index)
-            .ok_or_else(|| anyhow::anyhow!("Drift market {} not found", market_index))?;
+        debug!("Fetched {} Drift signals", signals.len());
+        Ok(signals)
+    }
 
-        let mark_price = parse_drift_price(&market.mark_price)?;
-        let oracle_price = parse_drift_price(&market.oracle_price)?;
-        let funding_rate_1h = parse_drift_funding(&market.last_funding_rate)?;
+    async fn fetch_market_signal(&self, market_name: &str, asset: &Asset) -> Result<DriftSignal> {
+        // Fetch L2 orderbook (includes mark price, oracle, market index)
+        let l2_url = format!("{}/l2?marketName={}&depth=1", DLOB_API, market_name);
+        let l2: DlobL2Response = self
+            .client
+            .get(&l2_url)
+            .send()
+            .await
+            .context("GET /l2 failed")?
+            .json()
+            .await
+            .context("Failed to parse /l2 response")?;
+
+        let mark_price = parse_drift_price(&l2.mark_price)?;
+        let oracle_price = Decimal::from(l2.oracle) / DRIFT_PRICE_PRECISION;
 
         // Mark premium = (mark - oracle) / oracle
         let mark_premium = if oracle_price > dec!(0) {
@@ -114,6 +129,12 @@ impl DriftScanner {
         } else {
             dec!(0)
         };
+
+        // Fetch latest funding rate from data API
+        let funding_rate_1h = self
+            .fetch_latest_funding(l2.market_index)
+            .await
+            .unwrap_or(dec!(0));
 
         debug!(
             "Drift {}: mark={:.2} oracle={:.2} premium={:.4}% funding={:.6}%/hr",
@@ -130,82 +151,31 @@ impl DriftScanner {
             mark_price,
             oracle_price,
             mark_premium,
-            market_index,
+            market_index: l2.market_index,
             captured_at: Utc::now(),
         })
     }
 
-    /// Fetch all supported assets at once
-    pub async fn fetch_all_signals(&self) -> Result<Vec<DriftSignal>> {
-        let markets = self.fetch_perp_markets().await?;
-        let mut signals = Vec::new();
+    async fn fetch_latest_funding(&self, market_index: u16) -> Result<Decimal> {
+        let url = format!("{}/fundingRates?marketIndex={}", DATA_API, market_index);
 
-        for (_, market) in &markets {
-            let asset = match symbol_to_asset(&market.symbol) {
-                Some(a) => a,
-                None => continue,
-            };
-
-            let mark_price = parse_drift_price(&market.mark_price)
-                .unwrap_or(dec!(0));
-            let oracle_price = parse_drift_price(&market.oracle_price)
-                .unwrap_or(dec!(0));
-            let funding_rate_1h = parse_drift_funding(&market.last_funding_rate)
-                .unwrap_or(dec!(0));
-
-            let mark_premium = if oracle_price > dec!(0) {
-                (mark_price - oracle_price) / oracle_price
-            } else {
-                dec!(0)
-            };
-
-            signals.push(DriftSignal {
-                asset,
-                funding_rate_1h,
-                mark_price,
-                oracle_price,
-                mark_premium,
-                market_index: market.market_index,
-                captured_at: Utc::now(),
-            });
-        }
-
-        debug!("Fetched {} Drift signals", signals.len());
-        Ok(signals)
-    }
-
-    async fn fetch_perp_markets(&self) -> Result<HashMap<u16, RawPerpMarket>> {
-        let url = format!("{}/v2/perpMarkets", self.base_url);
-
-        let resp = self
+        let resp: FundingRatesResponse = self
             .client
             .get(&url)
             .send()
             .await
-            .context("GET /v2/perpMarkets failed")?;
-
-        #[derive(Deserialize)]
-        struct PerpMarketsResponse {
-            success: bool,
-            data: Vec<RawPerpMarket>,
-        }
-
-        let body: PerpMarketsResponse = resp
+            .context("GET /fundingRates failed")?
             .json()
             .await
-            .context("Failed to parse /v2/perpMarkets")?;
+            .context("Failed to parse /fundingRates response")?;
 
-        if !body.success {
-            anyhow::bail!("Drift API returned success=false");
-        }
+        // Latest funding rate is the last entry
+        let latest = resp
+            .funding_rates
+            .last()
+            .ok_or_else(|| anyhow::anyhow!("no funding rates returned"))?;
 
-        let map = body
-            .data
-            .into_iter()
-            .map(|m| (m.market_index, m))
-            .collect();
-
-        Ok(map)
+        parse_drift_funding(&latest.funding_rate)
     }
 
     /// Estimate Drift trading fee.

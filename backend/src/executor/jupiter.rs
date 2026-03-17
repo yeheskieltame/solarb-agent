@@ -3,7 +3,6 @@ use reqwest::Client;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
 use serde::{Deserialize, Serialize};
-use solana_sdk::signature::Signer;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, info, warn};

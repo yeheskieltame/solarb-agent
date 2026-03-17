@@ -1,3 +1,6 @@
+#![allow(dead_code)]
+
+mod ai;
 mod detector;
 mod executor;
 mod risk;
@@ -18,6 +21,7 @@ use tokio::time::{sleep, Duration, Instant};
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
+use crate::ai::AiAnalyzer;
 use crate::detector::ArbDetector;
 use crate::executor::TradeExecutor;
 use crate::risk::RiskManager;
@@ -35,7 +39,6 @@ struct AgentState {
     trades_executed: u64,
     scan_errors: u64,
     started_at: Instant,
-    cumulative_pnl: f64,
 }
 
 impl AgentState {
@@ -47,7 +50,6 @@ impl AgentState {
             trades_executed: 0,
             scan_errors: 0,
             started_at: Instant::now(),
-            cumulative_pnl: 0.0,
         }
     }
 
@@ -70,7 +72,7 @@ impl AgentState {
         self.started_at.elapsed().as_secs()
     }
 
-    fn to_status_dto(&self, daily_pnl: Decimal) -> AgentStatusDto {
+    fn to_status_dto(&self, daily_pnl: Decimal, dry_run: bool) -> AgentStatusDto {
         AgentStatusDto {
             is_running: true,
             scan_count: self.total_scans,
@@ -79,6 +81,7 @@ impl AgentState {
             total_pnl: dec_to_f64(daily_pnl),
             uptime: self.uptime_secs(),
             last_scan: Utc::now().timestamp_millis(),
+            mode: if dry_run { "Dry Run".to_string() } else { "Live".to_string() },
         }
     }
 
@@ -127,8 +130,8 @@ fn load_config() -> AgentConfig {
             .unwrap_or_else(|_| "https://quote-api.jup.ag/v6".to_string()),
         dry_run,
         daily_loss_stop_usdc: env_decimal("DAILY_LOSS_STOP_USDC", dec!(200)),
-        take_profit_pct: env_decimal("TAKE_PROFIT_PCT", dec!(0.50)),
-        stop_loss_pct: env_decimal("STOP_LOSS_PCT", dec!(1.00)),
+        take_profit_pct: env_decimal("TAKE_PROFIT_PCT", dec!(0.03)),  // 3% of entry price
+        stop_loss_pct: env_decimal("STOP_LOSS_PCT", dec!(0.05)),    // 5% of entry price
         max_open_positions: env::var("MAX_OPEN_POSITIONS")
             .ok().and_then(|s| s.parse().ok()).unwrap_or(5),
     }
@@ -148,12 +151,19 @@ fn dec_to_f64(d: Decimal) -> f64 {
 
 // ── Main scan loop ────────────────────────────────────────────────────────────
 
+struct ScanResult {
+    /// Actionable opportunities (above min spread threshold)
+    actionable: Vec<ArbOpportunity>,
+    /// All cross-matched signals for display (including below threshold)
+    all_signals: Vec<ArbOpportunity>,
+}
+
 async fn run_scan_cycle(
     poly_scanner: &PolymarketScanner,
     drift_scanner: &DriftScanner,
     detector: &ArbDetector,
     config: &AgentConfig,
-) -> Result<Vec<ArbOpportunity>> {
+) -> Result<ScanResult> {
     let (poly_result, drift_result) = tokio::join!(
         poly_scanner.fetch_signals(),
         drift_scanner.fetch_all_signals(),
@@ -175,13 +185,17 @@ async fn run_scan_cycle(
         drift_signals.len()
     );
 
-    let opportunities = detector.detect(&poly_signals, &drift_signals);
+    // Get all cross-matched pairs for frontend display
+    let all_signals = detector.detect_all(&poly_signals, &drift_signals);
 
-    if opportunities.is_empty() {
-        info!("No actionable opportunities this cycle");
+    // Get only actionable opportunities for execution
+    let actionable = detector.detect(&poly_signals, &drift_signals);
+
+    if all_signals.is_empty() {
+        info!("No cross-matched signals this cycle");
     } else {
-        info!("Found {} opportunities:", opportunities.len());
-        for (i, opp) in opportunities.iter().enumerate() {
+        info!("Cross-matched {} signals ({} actionable):", all_signals.len(), actionable.len());
+        for (i, opp) in all_signals.iter().enumerate() {
             match opp.confidence {
                 Confidence::High => {
                     info!("  [{}] *** HIGH *** {}", i + 1, opp);
@@ -197,7 +211,7 @@ async fn run_scan_cycle(
         }
     }
 
-    Ok(opportunities)
+    Ok(ScanResult { actionable, all_signals })
 }
 
 // ── Position monitoring ──────────────────────────────────────────────────────
@@ -223,6 +237,8 @@ async fn monitor_positions(
         }
     };
 
+    let now = Utc::now();
+
     for pos in &open_positions {
         let current_price = drift_signals.iter()
             .find(|s| s.asset == pos.asset)
@@ -238,7 +254,14 @@ async fn monitor_positions(
             PositionDto::from_position(pos, current_price),
         ));
 
+        // Minimum hold time: 5 minutes before TP exit (SL always allowed)
+        let age_mins = (now - pos.opened_at).num_minutes();
+
         if let Some(reason) = executor.check_exit_conditions(pos, current_price) {
+            if reason == ExitReason::TakeProfit && age_mins < 5 {
+                info!("TP triggered for {} but position only {}min old — holding", pos.id, age_mins);
+                continue;
+            }
             info!("Exit triggered for {}: {} (price={:.2})", pos.id, reason, current_price);
 
             match executor.close_position(pos).await {
@@ -357,42 +380,229 @@ async fn main() -> Result<()> {
         ws_server.run(ws_port).await;
     });
 
+    // Initialize AI analyzer — supports multiple providers via AI_PROVIDER env var
+    // Providers: "claude-cli" (Max subscription via CLI), "claude" (API key), "gemini"
+    let ai_provider = env::var("AI_PROVIDER").unwrap_or_default().to_lowercase();
+    let ai_analyzer: Option<AiAnalyzer> = match ai_provider.as_str() {
+        "claude-cli" | "cli" => {
+            // Uses authenticated `claude` CLI binary — works with Claude Max subscription
+            let model = env::var("CLAUDE_MODEL").ok();
+            let analyzer = AiAnalyzer::claude_cli(model.as_deref());
+            info!("AI provider : {} ({})", analyzer.provider_name(), analyzer.model_name());
+            Some(analyzer)
+        }
+        "claude" | "anthropic" => {
+            match env::var("ANTHROPIC_API_KEY") {
+                Ok(key) => {
+                    // Auto-detect: OAuth token (sk-ant-oat*) → suggest CLI mode
+                    if key.starts_with("sk-ant-oat") {
+                        warn!("Detected OAuth token (Claude Max) — switching to claude-cli mode");
+                        warn!("OAuth tokens don't work with the API directly. Using `claude` CLI instead.");
+                        let model = env::var("CLAUDE_MODEL").ok();
+                        let analyzer = AiAnalyzer::claude_cli(model.as_deref());
+                        info!("AI provider : {} ({})", analyzer.provider_name(), analyzer.model_name());
+                        Some(analyzer)
+                    } else {
+                        let model = env::var("CLAUDE_MODEL").ok();
+                        let analyzer = AiAnalyzer::claude(&key, model.as_deref());
+                        info!("AI provider : {} ({})", analyzer.provider_name(), analyzer.model_name());
+                        Some(analyzer)
+                    }
+                }
+                Err(_) => {
+                    // No API key — try CLI mode as fallback
+                    warn!("No ANTHROPIC_API_KEY set — trying claude CLI mode");
+                    let model = env::var("CLAUDE_MODEL").ok();
+                    let analyzer = AiAnalyzer::claude_cli(model.as_deref());
+                    info!("AI provider : {} ({})", analyzer.provider_name(), analyzer.model_name());
+                    Some(analyzer)
+                }
+            }
+        }
+        "gemini" | "google" => {
+            match env::var("GEMINI_API_KEY") {
+                Ok(key) => {
+                    let analyzer = AiAnalyzer::gemini(&key);
+                    info!("AI provider : {} ({})", analyzer.provider_name(), analyzer.model_name());
+                    Some(analyzer)
+                }
+                Err(_) => {
+                    warn!("AI_PROVIDER=gemini but GEMINI_API_KEY not set — AI disabled");
+                    None
+                }
+            }
+        }
+        _ => {
+            // Auto-detect: try Claude API key, then OAuth→CLI, then Gemini, then CLI
+            if let Ok(key) = env::var("ANTHROPIC_API_KEY") {
+                let model = env::var("CLAUDE_MODEL").ok();
+                if key.starts_with("sk-ant-oat") {
+                    info!("Detected OAuth token — using claude CLI mode");
+                    let analyzer = AiAnalyzer::claude_cli(model.as_deref());
+                    info!("AI provider : {} ({}) [auto-detected]", analyzer.provider_name(), analyzer.model_name());
+                    Some(analyzer)
+                } else {
+                    let analyzer = AiAnalyzer::claude(&key, model.as_deref());
+                    info!("AI provider : {} ({}) [auto-detected]", analyzer.provider_name(), analyzer.model_name());
+                    Some(analyzer)
+                }
+            } else if let Ok(key) = env::var("GEMINI_API_KEY") {
+                let analyzer = AiAnalyzer::gemini(&key);
+                info!("AI provider : {} ({}) [auto-detected]", analyzer.provider_name(), analyzer.model_name());
+                Some(analyzer)
+            } else {
+                info!("No AI API key set — trying claude CLI as fallback");
+                let model = env::var("CLAUDE_MODEL").ok();
+                let analyzer = AiAnalyzer::claude_cli(model.as_deref());
+                info!("AI provider : {} ({})", analyzer.provider_name(), analyzer.model_name());
+                Some(analyzer)
+            }
+        }
+    };
+
+    // Test AI connectivity at startup
+    if let Some(ref analyzer) = ai_analyzer {
+        match analyzer.test_connection().await {
+            Ok(()) => info!("AI connectivity: OK"),
+            Err(e) => warn!("AI connectivity: FAILED — {}", e),
+        }
+    }
+
     info!("Agent ready — scanning every {}s", config.scan_interval_secs);
     info!("Press Ctrl+C to stop\n");
 
     loop {
         // 1. Scan for opportunities
         match run_scan_cycle(&poly_scanner, &drift_scanner, &detector, &config).await {
-            Ok(opportunities) => {
-                state.record_scan(&opportunities);
+            Ok(scan_result) => {
+                state.record_scan(&scan_result.actionable);
 
-                // Broadcast opportunities to frontend
-                for opp in &opportunities {
+                // Broadcast ALL cross-matched signals to frontend (not just actionable)
+                for opp in &scan_result.all_signals {
                     let _ = ws_tx.send(WsEvent::Opportunity(
                         OpportunityDto::from_arb(opp),
                     ));
                 }
 
-                // 2. Execute best high-confidence opportunity
-                if let Some(best) = opportunities.iter().find(|o| o.confidence == Confidence::High) {
-                    let usdc_balance = if config.dry_run {
-                        config.max_position_usdc
-                    } else {
-                        executor_wallet.usdc_balance().await.unwrap_or(dec!(0))
-                    };
+                // 2. AI-driven strategy or fallback execution
+                if let Some(ref analyzer) = ai_analyzer {
+                    // Ask AI for strategy (respects 2min cooldown internally)
+                    let open_pos: Vec<Position> = risk_manager.open_positions()
+                        .into_iter().cloned().collect();
+                    let exposure = risk_manager.total_open_exposure();
 
-                    let size = risk_manager.size_for_opportunity(
-                        config.max_position_usdc,
-                        best.liquidity_usdc,
-                        usdc_balance,
-                    );
+                    match analyzer.get_strategy(
+                        &scan_result.all_signals,
+                        &open_pos,
+                        exposure,
+                        config.max_total_exposure_usdc,
+                    ).await {
+                        Ok(decision) => {
+                            // Broadcast AI analysis to frontend
+                            let _ = ws_tx.send(WsEvent::AiAnalysis(decision.analysis));
 
-                    if size > dec!(10) {
-                        match risk_manager.can_open(size, &best.asset) {
-                            Ok(()) => {
+                            // Close positions AI recommends closing (with min hold time guard)
+                            let now_ts = Utc::now();
+                            for close_id in &decision.close {
+                                if let Some(pos) = open_pos.iter().find(|p| &p.id == close_id) {
+                                    let age_mins = (now_ts - pos.opened_at).num_minutes();
+                                    if age_mins < 5 {
+                                        info!("AI wants to close {} but position only {}min old — skipping", &close_id[..8.min(close_id.len())], age_mins);
+                                        continue;
+                                    }
+                                    match executor.close_position(pos).await {
+                                        Ok(pnl) => {
+                                            risk_manager.close_position(close_id, pnl);
+                                            let _ = ws_tx.send(WsEvent::PnlUpdate(PnlPointDto {
+                                                timestamp: Utc::now().timestamp_millis(),
+                                                value: dec_to_f64(pnl),
+                                                cumulative: dec_to_f64(risk_manager.daily_pnl()),
+                                            }));
+                                            info!("AI closed position {} | PnL: ${:.2}", &close_id[..8], pnl);
+                                        }
+                                        Err(e) => warn!("Failed to close {}: {}", &close_id[..8], e),
+                                    }
+                                }
+                            }
+
+                            // Execute opportunities AI recommends
+                            for &idx in &decision.execute {
+                                if let Some(opp) = scan_result.all_signals.get(idx) {
+                                    let size = risk_manager.size_for_opportunity(
+                                        config.max_position_usdc,
+                                        opp.liquidity_usdc,
+                                        if config.dry_run { config.max_position_usdc }
+                                        else { executor_wallet.usdc_balance().await.unwrap_or(dec!(0)) },
+                                    );
+
+                                    if size > dec!(10) {
+                                        match risk_manager.can_open(size, &opp.asset) {
+                                            Ok(()) => {
+                                                match executor.execute_opportunity(opp, size).await {
+                                                    Ok(position) => {
+                                                        let _ = ws_tx.send(WsEvent::PositionUpdate(
+                                                            PositionDto::from_position(&position, position.entry_price),
+                                                        ));
+                                                        risk_manager.open_position(position);
+                                                        state.record_trade();
+                                                    }
+                                                    Err(e) => warn!("Execution failed: {}", e),
+                                                }
+                                            }
+                                            Err(denial) => info!("Risk denied: {}", denial),
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            // Log the actual error (not just silent swallow)
+                            let err_msg = format!("{}", e);
+                            if !err_msg.contains("cooldown") {
+                                warn!("AI strategy call failed: {}", e);
+                            }
+                            // AI on cooldown or failed — use fallback logic
+                            let opportunities = &scan_result.actionable;
+                            for best in opportunities.iter().filter(|o| o.confidence == Confidence::High) {
+                                let size = risk_manager.size_for_opportunity(
+                                    config.max_position_usdc,
+                                    best.liquidity_usdc,
+                                    if config.dry_run { config.max_position_usdc }
+                                    else { executor_wallet.usdc_balance().await.unwrap_or(dec!(0)) },
+                                );
+
+                                if size > dec!(10) {
+                                    if let Ok(()) = risk_manager.can_open(size, &best.asset) {
+                                        match executor.execute_opportunity(best, size).await {
+                                            Ok(position) => {
+                                                let _ = ws_tx.send(WsEvent::PositionUpdate(
+                                                    PositionDto::from_position(&position, position.entry_price),
+                                                ));
+                                                risk_manager.open_position(position);
+                                                state.record_trade();
+                                            }
+                                            Err(e) => warn!("Fallback execution failed: {}", e),
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // No AI key — fallback: execute best single high-confidence opp
+                    let opportunities = &scan_result.actionable;
+                    if let Some(best) = opportunities.iter().find(|o| o.confidence == Confidence::High) {
+                        let size = risk_manager.size_for_opportunity(
+                            config.max_position_usdc,
+                            best.liquidity_usdc,
+                            if config.dry_run { config.max_position_usdc }
+                            else { executor_wallet.usdc_balance().await.unwrap_or(dec!(0)) },
+                        );
+
+                        if size > dec!(10) {
+                            if let Ok(()) = risk_manager.can_open(size, &best.asset) {
                                 match executor.execute_opportunity(best, size).await {
                                     Ok(position) => {
-                                        // Broadcast new position
                                         let _ = ws_tx.send(WsEvent::PositionUpdate(
                                             PositionDto::from_position(&position, position.entry_price),
                                         ));
@@ -401,9 +611,6 @@ async fn main() -> Result<()> {
                                     }
                                     Err(e) => warn!("Execution failed: {}", e),
                                 }
-                            }
-                            Err(denial) => {
-                                info!("Risk denied: {}", denial);
                             }
                         }
                     }
@@ -420,7 +627,7 @@ async fn main() -> Result<()> {
 
         // 4. Broadcast agent status every cycle
         let _ = ws_tx.send(WsEvent::AgentStatus(
-            state.to_status_dto(risk_manager.daily_pnl()),
+            state.to_status_dto(risk_manager.daily_pnl(), config.dry_run),
         ));
 
         // 5. Periodic summary

@@ -24,6 +24,8 @@ export interface Position {
   sizeUsdc: number;
   pnl: number;
   pnlPercent: number;
+  takeProfit: number;
+  stopLoss: number;
   openedAt: number;
 }
 
@@ -35,11 +37,30 @@ export interface AgentStatus {
   totalPnl: number;
   uptime: number;
   lastScan: number;
+  mode: string;
+}
+
+export interface AiAnalysis {
+  summary: string;
+  marketSentiment: string;
+  topOpportunity: {
+    asset: string;
+    direction: string;
+    aiConfidence: string;
+    reasoning: string;
+  } | null;
+  riskAssessment: string;
+  timestamp: number;
 }
 
 export interface WsMessage {
-  type: "opportunity" | "position_update" | "agent_status" | "pnl_update";
-  data: ArbOpportunity | Position | AgentStatus | PnlPoint;
+  type:
+    | "opportunity"
+    | "position_update"
+    | "agent_status"
+    | "pnl_update"
+    | "ai_analysis";
+  data: ArbOpportunity | Position | AgentStatus | PnlPoint | AiAnalysis;
 }
 
 export interface PnlPoint {

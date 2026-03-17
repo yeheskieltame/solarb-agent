@@ -1,4 +1,5 @@
 import Image from "next/image";
+import Link from "next/link";
 import AnimatedBg from "@/components/AnimatedBg";
 import Hero from "@/components/Hero";
 
@@ -168,8 +169,30 @@ export default function Home() {
       </div>
 
       {/* Footer */}
-      <footer className="relative z-10 px-6 py-12 text-center text-text-muted text-xs border-t border-border-glass">
-        <p>
+      <footer className="relative z-10 px-6 py-12 text-center border-t border-border-glass">
+        <div className="flex flex-wrap justify-center gap-6 mb-4">
+          <Link
+            href="/dashboard"
+            className="text-sm text-text-secondary hover:text-accent-cyan transition-colors"
+          >
+            Dashboard
+          </Link>
+          <Link
+            href="/setup"
+            className="text-sm text-text-secondary hover:text-accent-cyan transition-colors"
+          >
+            Getting Started
+          </Link>
+          <a
+            href="https://github.com/yeheskieltame/solarb-agent"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-sm text-text-secondary hover:text-accent-cyan transition-colors"
+          >
+            GitHub
+          </a>
+        </div>
+        <p className="text-text-muted text-xs">
           Built for the Solana Agent Economy Hackathon — Agent Talent Show
         </p>
       </footer>

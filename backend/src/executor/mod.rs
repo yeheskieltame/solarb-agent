@@ -78,16 +78,17 @@ impl TradeExecutor {
         };
 
         let entry_price = opp.drift_signal.mark_price;
-        let spread_in_price = entry_price * opp.net_spread;
 
+        // TP/SL as percentage of entry price (not of spread)
+        // e.g. take_profit_pct=0.03 → TP at 3% move, stop_loss_pct=0.05 → SL at 5% move
         let (take_profit_price, stop_loss_price) = match side {
             PositionSide::Short => (
-                entry_price - spread_in_price * self.take_profit_pct,
-                entry_price + spread_in_price * self.stop_loss_pct,
+                entry_price * (dec!(1) - self.take_profit_pct),
+                entry_price * (dec!(1) + self.stop_loss_pct),
             ),
             PositionSide::Long => (
-                entry_price + spread_in_price * self.take_profit_pct,
-                entry_price - spread_in_price * self.stop_loss_pct,
+                entry_price * (dec!(1) + self.take_profit_pct),
+                entry_price * (dec!(1) - self.stop_loss_pct),
             ),
         };
 
@@ -200,26 +201,12 @@ impl TradeExecutor {
         }
     }
 
-    /// Close a position: reverse Drift perp + unwind Jupiter swap
+    /// Close a position: reverse Drift perp + unwind Jupiter swap.
+    /// In dry-run mode, calculates P&L from real Drift mark price movements.
     pub async fn close_position(&self, pos: &Position) -> Result<Decimal> {
         info!("Closing position: {}", pos);
 
-        if self.dry_run {
-            let simulated_pnl = pos.size_usdc * dec!(0.02);
-            info!("[DRY RUN] Would close {} {} | Simulated PnL: ${:.2}", pos.side, pos.asset, simulated_pnl);
-            return Ok(simulated_pnl);
-        }
-
-        // Close Drift perp position
-        let sig = self.drift.close_perp_position(pos.drift_market_index).await?;
-        info!("Drift close tx: {}", sig);
-
-        // Unwind Jupiter swap leg (sell back the spot asset)
-        if let Err(e) = self.unwind_jupiter_leg(pos).await {
-            warn!("Jupiter unwind failed: {} — PnL may be approximate", e);
-        }
-
-        // Estimate PnL from mark price vs entry
+        // Get current market price (works in both dry-run and live)
         let current = self.drift.get_mark_price(pos.drift_market_index).await
             .unwrap_or(pos.entry_price);
 
@@ -231,6 +218,22 @@ impl TradeExecutor {
                 (pos.entry_price - current) / pos.entry_price * pos.size_usdc
             }
         };
+
+        if self.dry_run {
+            info!(
+                "[DRY RUN] Close {} {} | entry={:.2} exit={:.2} | PnL: ${:.2}",
+                pos.side, pos.asset, pos.entry_price, current, pnl
+            );
+            return Ok(pnl);
+        }
+
+        // Live execution
+        let sig = self.drift.close_perp_position(pos.drift_market_index).await?;
+        info!("Drift close tx: {}", sig);
+
+        if let Err(e) = self.unwind_jupiter_leg(pos).await {
+            warn!("Jupiter unwind failed: {} — PnL may be approximate", e);
+        }
 
         info!("Realized PnL: ${:.2}", pnl);
         Ok(pnl)
@@ -348,13 +351,14 @@ mod tests {
                 ).unwrap()
             ),
             dry_run: true,
-            take_profit_pct: dec!(0.50),
-            stop_loss_pct: dec!(1.00),
+            take_profit_pct: dec!(0.03),
+            stop_loss_pct: dec!(0.05),
         };
 
-        let pos = make_pos(PositionSide::Long, dec!(65000), dec!(66000), dec!(64000));
-        assert_eq!(executor.check_exit_conditions(&pos, dec!(66500)), Some(ExitReason::TakeProfit));
-        assert_eq!(executor.check_exit_conditions(&pos, dec!(63500)), Some(ExitReason::StopLoss));
+        // Long TP at 65000 * 1.03 = 66950, SL at 65000 * 0.95 = 61750
+        let pos = make_pos(PositionSide::Long, dec!(65000), dec!(66950), dec!(61750));
+        assert_eq!(executor.check_exit_conditions(&pos, dec!(67000)), Some(ExitReason::TakeProfit));
+        assert_eq!(executor.check_exit_conditions(&pos, dec!(61000)), Some(ExitReason::StopLoss));
         assert_eq!(executor.check_exit_conditions(&pos, dec!(65500)), None);
     }
 
@@ -371,14 +375,15 @@ mod tests {
                 ).unwrap()
             ),
             dry_run: true,
-            take_profit_pct: dec!(0.50),
-            stop_loss_pct: dec!(1.00),
+            take_profit_pct: dec!(0.03),
+            stop_loss_pct: dec!(0.05),
         };
 
-        let pos = make_pos(PositionSide::Short, dec!(65000), dec!(64000), dec!(66000));
-        assert_eq!(executor.check_exit_conditions(&pos, dec!(63500)), Some(ExitReason::TakeProfit));
-        assert_eq!(executor.check_exit_conditions(&pos, dec!(66500)), Some(ExitReason::StopLoss));
-        assert_eq!(executor.check_exit_conditions(&pos, dec!(65500)), None);
+        // Short TP at 65000 * 0.97 = 63050, SL at 65000 * 1.05 = 68250
+        let pos = make_pos(PositionSide::Short, dec!(65000), dec!(63050), dec!(68250));
+        assert_eq!(executor.check_exit_conditions(&pos, dec!(62000)), Some(ExitReason::TakeProfit));
+        assert_eq!(executor.check_exit_conditions(&pos, dec!(69000)), Some(ExitReason::StopLoss));
+        assert_eq!(executor.check_exit_conditions(&pos, dec!(64500)), None);
     }
 
     #[test]

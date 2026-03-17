@@ -33,7 +33,11 @@ export default function AgentStats({ status }: Props) {
       />
       <Card label="Uptime" value={uptimeStr} />
       <Card label="Last Scan" value={lastScanStr} />
-      <Card label="Mode" value="Dry Run" accent="warning" />
+      <Card
+        label="Mode"
+        value={status.mode}
+        accent={status.mode === "Live" ? "profit" : "warning"}
+      />
     </div>
   );
 }
@@ -61,7 +65,7 @@ function Card({
       <p className="text-xs text-text-muted uppercase tracking-wider">
         {label}
       </p>
-      <p className={`mt-1 text-xl font-bold font-tabular ${accentClass}`}>
+      <p className={`mt-1 text-xl font-bold font-tabular ${accentClass}`} suppressHydrationWarning>
         {value}
       </p>
     </div>

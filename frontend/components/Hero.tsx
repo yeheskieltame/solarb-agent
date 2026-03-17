@@ -34,15 +34,21 @@ export default function Hero() {
       </div>
 
       {/* CTA */}
-      <div className="mt-12 flex gap-4">
+      <div className="mt-12 flex flex-wrap justify-center gap-4">
         <Link
           href="/dashboard"
           className="rounded-[var(--radius-button)] bg-gradient-to-r from-accent-cyan to-accent-teal px-8 py-3 text-sm font-semibold text-bg-deep transition-opacity hover:opacity-90"
         >
           Open Dashboard
         </Link>
+        <Link
+          href="/setup"
+          className="glass-card rounded-[var(--radius-button)] px-8 py-3 text-sm font-semibold text-text-primary transition-opacity hover:opacity-90"
+        >
+          Getting Started
+        </Link>
         <a
-          href="https://github.com"
+          href="https://github.com/yeheskieltame/solarb-agent"
           target="_blank"
           rel="noopener noreferrer"
           className="glass-card rounded-[var(--radius-button)] px-8 py-3 text-sm font-semibold text-text-primary transition-opacity hover:opacity-90"

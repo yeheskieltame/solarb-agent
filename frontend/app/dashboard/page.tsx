@@ -5,6 +5,7 @@ import Image from "next/image";
 import Link from "next/link";
 import AnimatedBg from "@/components/AnimatedBg";
 import AgentStats from "@/components/AgentStats";
+import AiInsights from "@/components/AiInsights";
 import LiveFeed from "@/components/LiveFeed";
 import PositionCard from "@/components/PositionCard";
 import PnlChart from "@/components/PnlChart";
@@ -12,6 +13,7 @@ import WalletConnect from "@/components/WalletConnect";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import type {
   AgentStatus,
+  AiAnalysis,
   ArbOpportunity,
   Position,
   PnlPoint,
@@ -28,6 +30,7 @@ const defaultStatus: AgentStatus = {
   totalPnl: 0,
   uptime: 0,
   lastScan: Date.now(),
+  mode: "Dry Run",
 };
 
 export default function Dashboard() {
@@ -35,14 +38,21 @@ export default function Dashboard() {
   const [opportunities, setOpportunities] = useState<ArbOpportunity[]>([]);
   const [positions, setPositions] = useState<Position[]>([]);
   const [pnlHistory, setPnlHistory] = useState<PnlPoint[]>([]);
+  const [aiAnalysis, setAiAnalysis] = useState<AiAnalysis | null>(null);
 
   const handleMessage = useCallback((msg: WsMessage) => {
     switch (msg.type) {
-      case "opportunity":
-        setOpportunities((prev) =>
-          [msg.data as ArbOpportunity, ...prev].slice(0, MAX_FEED_ITEMS),
-        );
+      case "opportunity": {
+        const opp = msg.data as ArbOpportunity;
+        setOpportunities((prev) => {
+          const exists = prev.some((p) => p.id === opp.id);
+          if (exists) {
+            return prev.map((p) => (p.id === opp.id ? opp : p));
+          }
+          return [opp, ...prev].slice(0, MAX_FEED_ITEMS);
+        });
         break;
+      }
       case "position_update":
         setPositions((prev) => {
           const updated = msg.data as Position;
@@ -60,6 +70,9 @@ export default function Dashboard() {
         break;
       case "pnl_update":
         setPnlHistory((prev) => [...prev, msg.data as PnlPoint]);
+        break;
+      case "ai_analysis":
+        setAiAnalysis(msg.data as AiAnalysis);
         break;
     }
   }, []);
@@ -99,8 +112,11 @@ export default function Dashboard() {
           <AgentStats status={status} />
 
           <div className="grid gap-6 lg:grid-cols-2">
-            <LiveFeed opportunities={opportunities} />
             <div className="space-y-6">
+              <LiveFeed opportunities={opportunities} />
+            </div>
+            <div className="space-y-6">
+              <AiInsights analysis={aiAnalysis} />
               <PnlChart data={pnlHistory} />
               <PositionCard positions={positions} />
             </div>

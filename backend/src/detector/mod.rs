@@ -29,6 +29,7 @@ fn estimate_fees(poly_signal: &PolymarketSignal) -> FeeEstimate {
 /// the same asset and time window, compute the arbitrage spread.
 ///
 /// Returns None if no exploitable spread exists after fees.
+/// Calculate spread with a minimum threshold — returns None if below threshold
 pub fn calculate_spread(
     poly: &PolymarketSignal,
     drift: &DriftSignal,
@@ -202,6 +203,68 @@ impl ArbDetector {
         // Sort by net spread descending — best opportunity first
         opportunities.sort_by(|a, b| b.net_spread.cmp(&a.net_spread));
         opportunities
+    }
+
+    /// Return ALL cross-matched pairs regardless of spread threshold.
+    /// Used for frontend display — shows monitoring data even when no arbitrage exists.
+    pub fn detect_all(
+        &self,
+        poly_signals: &[PolymarketSignal],
+        drift_signals: &[DriftSignal],
+    ) -> Vec<ArbOpportunity> {
+        let mut all = Vec::new();
+
+        for poly in poly_signals {
+            let drift = match drift_signals.iter().find(|d| d.asset == poly.asset) {
+                Some(d) => d,
+                None => continue,
+            };
+
+            let signal_age_diff = (poly.captured_at - drift.captured_at)
+                .num_seconds()
+                .abs();
+            if signal_age_diff > 5 {
+                continue;
+            }
+
+            let mins_to_resolution = (poly.resolves_at - Utc::now()).num_minutes();
+            if mins_to_resolution < 2 {
+                continue;
+            }
+
+            // Calculate spread with zero threshold — include everything
+            if let Some(spread) = calculate_spread(poly, drift, dec!(-1)) {
+                let confidence = score_confidence(spread.net_spread);
+                let id = format!(
+                    "{}-{}-{}",
+                    poly.asset,
+                    poly.direction,
+                    poly.captured_at.timestamp()
+                );
+
+                all.push(ArbOpportunity {
+                    id,
+                    asset: poly.asset.clone(),
+                    direction: poly.direction.clone(),
+                    poly_signal: poly.clone(),
+                    poly_prob: spread.poly_prob,
+                    drift_signal: drift.clone(),
+                    drift_prob: spread.drift_prob,
+                    gross_spread: spread.gross_spread,
+                    poly_fee: spread.poly_fee,
+                    drift_fee: spread.drift_fee,
+                    net_spread: spread.net_spread,
+                    buy_poly_yes: spread.buy_poly_yes,
+                    confidence,
+                    liquidity_usdc: poly.yes_liquidity,
+                    time_to_resolution_mins: mins_to_resolution,
+                    detected_at: Utc::now(),
+                });
+            }
+        }
+
+        all.sort_by(|a, b| b.net_spread.cmp(&a.net_spread));
+        all
     }
 
     /// How many opportunities are HIGH confidence in the current batch

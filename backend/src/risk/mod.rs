@@ -65,7 +65,7 @@ impl RiskManager {
         }
     }
 
-    pub fn can_open(&mut self, size_usdc: Decimal, asset: &Asset) -> Result<(), RiskDenial> {
+    pub fn can_open(&mut self, size_usdc: Decimal, _asset: &Asset) -> Result<(), RiskDenial> {
         self.maybe_reset_daily();
 
         if size_usdc > self.limits.max_position_usdc {
@@ -99,10 +99,7 @@ impl RiskManager {
             });
         }
 
-        if self.find_position_for_asset(asset).is_some() {
-            return Err(RiskDenial::DuplicateAsset { asset: asset.clone() });
-        }
-
+        // Allow multiple positions on the same asset for different markets
         Ok(())
     }
 
@@ -232,11 +229,11 @@ mod tests {
     }
 
     #[test]
-    fn test_duplicate_asset() {
+    fn test_multiple_positions_same_asset() {
         let mut rm = RiskManager::new(RiskLimits::default());
         rm.open_position(make_position(Asset::BTC, dec!(100)));
         let result = rm.can_open(dec!(100), &Asset::BTC);
-        assert!(matches!(result, Err(RiskDenial::DuplicateAsset { .. })));
+        assert!(result.is_ok(), "Should allow multiple positions on same asset");
     }
 
     #[test]

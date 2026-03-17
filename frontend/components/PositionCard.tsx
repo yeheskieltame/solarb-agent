@@ -67,6 +67,22 @@ function PositionRow({ position }: { position: Position }) {
         </div>
       </div>
 
+      {/* TP / SL */}
+      <div className="grid grid-cols-2 gap-2 text-center min-w-[120px]">
+        <div>
+          <p className="text-xs text-profit">TP</p>
+          <p className="text-xs font-tabular text-profit">
+            ${position.takeProfit.toLocaleString()}
+          </p>
+        </div>
+        <div>
+          <p className="text-xs text-loss">SL</p>
+          <p className="text-xs font-tabular text-loss">
+            ${position.stopLoss.toLocaleString()}
+          </p>
+        </div>
+      </div>
+
       {/* Size */}
       <div className="text-center min-w-[60px]">
         <p className="text-xs text-text-muted">Size</p>

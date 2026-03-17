@@ -7,6 +7,7 @@ use tokio::sync::broadcast;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{error, info, warn};
 
+use crate::ai::AiAnalysis;
 use crate::types::*;
 
 // ── Frontend-compatible DTOs ────────────────────────────────────────────────
@@ -20,6 +21,7 @@ pub enum WsEvent {
     PositionUpdate(PositionDto),
     AgentStatus(AgentStatusDto),
     PnlUpdate(PnlPointDto),
+    AiAnalysis(AiAnalysis),
 }
 
 /// Matches frontend ArbOpportunity
@@ -45,7 +47,11 @@ impl OpportunityDto {
             drift_prob: dec_to_f64(opp.drift_prob),
             gross_spread: dec_to_f64(opp.gross_spread),
             net_spread: dec_to_f64(opp.net_spread),
-            confidence: opp.confidence.to_string().to_ascii_lowercase(),
+            confidence: match opp.confidence {
+                Confidence::Low => "Low".to_string(),
+                Confidence::Medium => "Medium".to_string(),
+                Confidence::High => "High".to_string(),
+            },
             timestamp: opp.detected_at.timestamp_millis(),
         }
     }
@@ -63,6 +69,8 @@ pub struct PositionDto {
     pub size_usdc: f64,
     pub pnl: f64,
     pub pnl_percent: f64,
+    pub take_profit: f64,
+    pub stop_loss: f64,
     pub opened_at: i64,
 }
 
@@ -97,6 +105,8 @@ impl PositionDto {
             size_usdc: size,
             pnl,
             pnl_percent,
+            take_profit: dec_to_f64(pos.take_profit_price),
+            stop_loss: dec_to_f64(pos.stop_loss_price),
             opened_at: pos.opened_at.timestamp_millis(),
         }
     }
@@ -113,6 +123,7 @@ pub struct AgentStatusDto {
     pub total_pnl: f64,
     pub uptime: u64,
     pub last_scan: i64,
+    pub mode: String,
 }
 
 /// Matches frontend PnlPoint
