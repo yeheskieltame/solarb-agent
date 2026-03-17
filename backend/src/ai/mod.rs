@@ -468,69 +468,92 @@ fn build_strategy_prompt(
     total_exposure: Decimal,
     max_exposure: Decimal,
 ) -> String {
-    let mut p = String::from(
-        "You are SolArb Agent's AI strategy advisor for cross-venue arbitrage between Polymarket and Drift Protocol.\n\n\
-         RULES:\n\
-         - EXECUTE MULTIPLE opportunities when possible — fill up to max exposure budget, not just 1\n\
-         - Never open BOTH Long AND Short on the same asset simultaneously — they cancel each other\n\
-         - Pick the BEST direction per asset based on which side has the larger spread\n\
-         - Respect max exposure budget\n\
-         - Prefer opportunities with higher net spread and more liquidity\n\
-         - Only recommend opportunities with net spread > 5%\n\
-         - DO NOT close positions opened less than 5 minutes ago — they need time to converge\n\
-         - DO NOT close positions with unrealized PnL less than $1 unless stop-loss is near\n\
-         - Arb positions should be held for convergence, not scalped for micro-profits\n\
-         - Only close a position if: (a) it conflicts with a better opportunity, (b) it has been open 10+ minutes with deteriorating spread, or (c) stop-loss is imminent\n\n"
+    let now = chrono::Utc::now();
+    let timestamp = now.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+
+    let mut p = format!(
+        "You are SolArb Agent — an autonomous cross-venue arbitrage strategist.\n\
+         Timestamp: {}\n\n\
+         YOUR MANDATE:\n\
+         You have FULL authority over all trade decisions. Your decisions are executed immediately.\n\
+         Maximize portfolio PnL through intelligent position management.\n\n\
+         STRATEGY RULES:\n\
+         1. EXECUTE multiple opportunities — fill up to max exposure, each position costs $500\n\
+         2. Never hold BOTH Long AND Short on the same asset — they cancel out\n\
+         3. Pick the BEST direction per asset (larger net spread wins)\n\
+         4. Close conflicting positions to free budget for better opportunities\n\
+         5. Close losing positions early to cut losses\n\
+         6. Prefer higher net spread + higher liquidity\n\
+         7. Only execute if net spread > 5%\n\
+         8. You may close ANY position at ANY time if you judge it optimal\n\n",
+        timestamp
     );
 
+    // Portfolio state
+    let remaining = max_exposure - total_exposure;
+    let open_count = open_positions.len();
     p.push_str(&format!(
-        "PORTFOLIO: exposure=${:.0}/{:.0} USDC\n\n",
+        "PORTFOLIO STATE:\n\
+         - Exposure: ${:.0} / ${:.0} USDC (${:.0} available)\n\
+         - Open positions: {} / 5 slots\n\n",
         dec_to_f64(total_exposure),
-        dec_to_f64(max_exposure)
+        dec_to_f64(max_exposure),
+        dec_to_f64(remaining),
+        open_count,
     ));
 
+    // Open positions with detailed info
     if !open_positions.is_empty() {
         p.push_str("OPEN POSITIONS:\n");
-        let now = chrono::Utc::now();
         for pos in open_positions {
-            let age_mins = (now - pos.opened_at).num_minutes();
+            let age_secs = (now - pos.opened_at).num_seconds();
+            let age_str = if age_secs < 60 {
+                format!("{}s", age_secs)
+            } else {
+                format!("{}m{}s", age_secs / 60, age_secs % 60)
+            };
             p.push_str(&format!(
-                "  [{}] {} {} ${:.0} @ {:.2} | TP={:.2} SL={:.2} | age={}min\n",
-                pos.id[..8].to_string(),
-                pos.asset,
-                pos.side,
-                dec_to_f64(pos.size_usdc),
-                dec_to_f64(pos.entry_price),
-                dec_to_f64(pos.take_profit_price),
-                dec_to_f64(pos.stop_loss_price),
-                age_mins,
+                "  [{id}] {asset} {side} ${size:.0} @ {entry:.2} | TP={tp:.2} SL={sl:.2} | opened={age} ago\n",
+                id = &pos.id[..8],
+                asset = pos.asset,
+                side = pos.side,
+                size = dec_to_f64(pos.size_usdc),
+                entry = dec_to_f64(pos.entry_price),
+                tp = dec_to_f64(pos.take_profit_price),
+                sl = dec_to_f64(pos.stop_loss_price),
+                age = age_str,
             ));
         }
         p.push('\n');
+    } else {
+        p.push_str("OPEN POSITIONS: none\n\n");
     }
 
-    p.push_str("AVAILABLE OPPORTUNITIES:\n");
+    // Opportunities with clear indexing
+    p.push_str(&format!("SCAN RESULTS ({} signals):\n", opportunities.len()));
     for (i, opp) in opportunities.iter().enumerate() {
+        let est_profit = dec_to_f64(opp.net_spread) * 500.0;
         p.push_str(&format!(
-            "  [{i}] {asset} {dir} | Poly={poly:.1}% Drift={drift:.1}% | Net spread={net:.2}% | Liq=${liq:.0} | T-{mins}min\n",
+            "  [{i}] {asset} {dir} | Poly={poly:.1}% Drift={drift:.1}% | spread={net:.2}% | est_profit=${profit:.0} | liq=${liq:.0} | resolves_in={mins}min\n",
             i = i,
             asset = opp.asset,
             dir = opp.direction,
             poly = dec_to_f64(opp.poly_prob) * 100.0,
             drift = dec_to_f64(opp.drift_prob) * 100.0,
             net = dec_to_f64(opp.net_spread) * 100.0,
+            profit = est_profit,
             liq = dec_to_f64(opp.liquidity_usdc),
             mins = opp.time_to_resolution_mins,
         ));
     }
 
     p.push_str(
-        "\nRespond in EXACTLY this format (one per line):\n\
+        "\nRespond in EXACTLY this format (one per line, no extra text):\n\
          EXECUTE|comma-separated indices (e.g. 0,2,4) or NONE\n\
          CLOSE|comma-separated position ID prefixes (e.g. abc12345,def67890) or NONE\n\
          SUMMARY|One sentence market overview\n\
          SENTIMENT|Bullish or Bearish or Neutral\n\
-         REASONING|Why these trades — one sentence\n\
+         REASONING|Why these trades\n\
          RISK|One sentence risk note\n"
     );
 

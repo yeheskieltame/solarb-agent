@@ -237,8 +237,6 @@ async fn monitor_positions(
         }
     };
 
-    let now = Utc::now();
-
     for pos in &open_positions {
         let current_price = drift_signals.iter()
             .find(|s| s.asset == pos.asset)
@@ -254,14 +252,7 @@ async fn monitor_positions(
             PositionDto::from_position(pos, current_price),
         ));
 
-        // Minimum hold time: 5 minutes before TP exit (SL always allowed)
-        let age_mins = (now - pos.opened_at).num_minutes();
-
         if let Some(reason) = executor.check_exit_conditions(pos, current_price) {
-            if reason == ExitReason::TakeProfit && age_mins < 5 {
-                info!("TP triggered for {} but position only {}min old — holding", pos.id, age_mins);
-                continue;
-            }
             info!("Exit triggered for {}: {} (price={:.2})", pos.id, reason, current_price);
 
             match executor.close_position(pos).await {
@@ -501,15 +492,9 @@ async fn main() -> Result<()> {
                             // Broadcast AI analysis to frontend
                             let _ = ws_tx.send(WsEvent::AiAnalysis(decision.analysis));
 
-                            // Close positions AI recommends closing (with min hold time guard)
-                            let now_ts = Utc::now();
+                            // Close positions AI recommends — trust AI decisions fully
                             for close_id in &decision.close {
                                 if let Some(pos) = open_pos.iter().find(|p| &p.id == close_id) {
-                                    let age_mins = (now_ts - pos.opened_at).num_minutes();
-                                    if age_mins < 5 {
-                                        info!("AI wants to close {} but position only {}min old — skipping", &close_id[..8.min(close_id.len())], age_mins);
-                                        continue;
-                                    }
                                     match executor.close_position(pos).await {
                                         Ok(pnl) => {
                                             risk_manager.close_position(close_id, pnl);
